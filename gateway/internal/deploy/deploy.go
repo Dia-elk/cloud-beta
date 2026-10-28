@@ -115,6 +115,10 @@ func (c *Client) do(method, path string, body any) (int, []byte, error) {
 // portRange reads DEPLOY_PORT_MIN/MAX, defaulting to 3100-3199.
 // Invalid values fall back to the defaults rather than failing open
 // to an unbounded range.
+// PortRange exposes the deploy port range, e.g. so the gateway can
+// allow deployed apps' origins in CORS.
+func PortRange() (int, int) { return portRange() }
+
 func portRange() (int, int) {
 	min, max := 3100, 3199
 	if v := os.Getenv("DEPLOY_PORT_MIN"); v != "" {
