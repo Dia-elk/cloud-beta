@@ -88,17 +88,20 @@ if command -v docker >/dev/null 2>&1; then
   OWNER_DSN="postgres://${POSTGRES_USER:-cloud_owner}:${POSTGRES_PASSWORD:-change-me-owner}@postgres:5432/${POSTGRES_DB:-cloudbeta}?sslmode=disable"
   echo "Trying gateway with APP_DATABASE_URL = owner DSN (expect exit != 0, 'refusing to start'):"
   set +e
-  OUT=$(docker compose run --rm -e "APP_DATABASE_URL=$OWNER_DSN" gateway 2>&1 | head -20)
+  # Capture the gateway's exit code, not head's: $? after a pipe is the last command's.
+  OUT=$(docker compose run --rm -e "APP_DATABASE_URL=$OWNER_DSN" gateway 2>&1)
   RC=$?
   set -e
+  OUT=$(echo "$OUT" | head -20)
   echo "$OUT"
   if [ "$RC" -eq 0 ]; then echo "FAIL: gateway started with owner APP_DATABASE_URL"; exit 1; fi
   echo "$OUT" | grep -q "refusing to start" || { echo "FAIL: gateway did not report 'refusing to start' on owner DSN"; exit 1; }
   echo "Trying gateway with APP_DATABASE_URL empty (expect exit != 0, 'refusing to start'):"
   set +e
-  OUT2=$(docker compose run --rm -e "APP_DATABASE_URL=" gateway 2>&1 | head -20)
+  OUT2=$(docker compose run --rm -e "APP_DATABASE_URL=" gateway 2>&1)
   RC2=$?
   set -e
+  OUT2=$(echo "$OUT2" | head -20)
   echo "$OUT2"
   if [ "$RC2" -eq 0 ]; then echo "FAIL: gateway started with empty APP_DATABASE_URL"; exit 1; fi
   echo "$OUT2" | grep -q "refusing to start" || { echo "FAIL: gateway did not report 'refusing to start' on empty APP_DATABASE_URL"; exit 1; }
