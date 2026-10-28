@@ -1,0 +1,74 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-cloud_owner}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-owner}
+      POSTGRES_DB: ${POSTGRES_DB:-cloudbeta}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:-change-me-app}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres/init-app-role.sh:/docker-entrypoint-initdb.d/01-app-role.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cloud_owner}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+  gateway:
+    build: ./gateway
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PORT: "8080"
+      DATABASE_URL: postgres://${POSTGRES_USER:-cloud_owner}:${POSTGRES_PASSWORD:-change-me-owner}@postgres:5432/${POSTGRES_DB:-cloudbeta}?sslmode=disable
+      APP_DATABASE_URL: postgres://cloud_app:${APP_DB_PASSWORD:-change-me-app}@postgres:5432/${POSTGRES_DB:-cloudbeta}?sslmode=disable
+      JWT_SECRET: ${JWT_SECRET:-beta-dev-secret-change-me}
+      DOCKER_HOST: unix:///var/run/docker.sock
+      DEPLOY_IMAGE: cloudbeta-sample-app
+      DEPLOY_PUBLIC_HOST: http://localhost
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./gateway/policy.json:/gateway/policy.json:ro
+      - ./gateway/migrations:/gateway/migrations:ro
+      # LOCAL MVP TRADEOFF, NOT production multi-tenant isolation: the
+      # gateway mounts the host Docker socket so it can start real
+      # per-app containers. A compromised gateway could control the
+      # host Docker daemon. Production needs a separate orchestrator /
+      # per-tenant runtime, not the socket.
+      - /var/run/docker.sock:/var/run/docker.sock
+  dashboard:
+    build: ./dashboard
+    depends_on:
+      - gateway
+    environment:
+      NEXT_PUBLIC_GATEWAY_URL: ${NEXT_PUBLIC_GATEWAY_URL:-http://localhost:8080}
+    ports:
+      - "3000:3000"
+  sample-app:
+    build: ./sample-app
+    # Named so the gateway can reference the built image by name when
+    # it deploys a per-app container (DEPLOY_IMAGE=cloudbeta-sample-app).
+    image: cloudbeta-sample-app
+    depends_on:
+      - gateway
+    environment:
+      NEXT_PUBLIC_GATEWAY_URL: ${NEXT_PUBLIC_GATEWAY_URL:-http://localhost:8080}
+    ports:
+      - "3001:3000"
+  mcp:
+    build:
+      context: ./gateway
+      dockerfile: Dockerfile
+    # MCP runs the /mcp binary, not the gateway. Override entrypoint.
+    entrypoint: ["/mcp"]
+    depends_on:
+      - gateway
+    environment:
+      GATEWAY_URL: http://gateway:8080
+      MCP_TOKEN: ${MCP_TOKEN:-}
+      MCP_COMPANY_ID: ${MCP_COMPANY_ID:-}
+    stdin_open: true
+volumes:
+  pgdata:
