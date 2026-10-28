@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -116,6 +117,14 @@ func cors(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// dbError reports a failed tenant query or write as 500 instead of a
+// silent 200 with empty data. The real error is logged, never sent to
+// the client.
+func dbError(w http.ResponseWriter, where string, err error) {
+	log.Printf("db error in %s: %v", where, err)
+	writeJSON(w, 500, map[string]string{"error": "database error", "code": "DB_ERROR"})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -388,7 +397,7 @@ func (s *Server) handleApps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var out []map[string]any
-	_ = s.tenant(r.Context(), c, u, role, func(tx pgx.Tx) error {
+	err := s.tenant(r.Context(), c, u, role, func(tx pgx.Tx) error {
 		rows, err := tx.Query(r.Context(), `SELECT id,name,repo,url,status,container_id,port FROM apps ORDER BY created_at DESC`)
 		if err != nil {
 			return err
@@ -397,11 +406,17 @@ func (s *Server) handleApps(w http.ResponseWriter, r *http.Request) {
 		out = []map[string]any{}
 		for rows.Next() {
 			var a App
-			_ = rows.Scan(&a.ID, &a.Name, &a.Repo, &a.URL, &a.Status, &a.ContainerID, &a.Port)
+			if err := rows.Scan(&a.ID, &a.Name, &a.Repo, &a.URL, &a.Status, &a.ContainerID, &a.Port); err != nil {
+				return err
+			}
 			out = append(out, map[string]any{"id": a.ID, "name": a.Name, "repo": a.Repo, "url": a.URL, "status": a.Status, "container_id": a.ContainerID, "port": a.Port})
 		}
-		return nil
+		return rows.Err()
 	})
+	if err != nil {
+		dbError(w, "list apps", err)
+		return
+	}
 	s.audit(r, start, "read", "apps", "", c, true, "")
 	writeJSON(w, 200, map[string]any{"apps": out})
 }
@@ -561,10 +576,17 @@ func (s *Server) handleAppDeploy(w http.ResponseWriter, r *http.Request, id stri
 		writeJSON(w, 502, map[string]string{"error": "deploy failed: container did not become healthy"})
 		return
 	}
-	_ = s.tenant(r.Context(), c, u, role, func(tx pgx.Tx) error {
+	if err := s.tenant(r.Context(), c, u, role, func(tx pgx.Tx) error {
 		_, err := tx.Exec(r.Context(), `UPDATE apps SET status='running', url=$2, container_id=$3, port=$4 WHERE id=$1`, id, url, containerID, port)
 		return err
-	})
+	}); err != nil {
+		// The container runs but the app row does not record it; do not
+		// report a running app the control plane cannot track.
+		_ = dep.Stop(containerID)
+		_ = dep.Remove(containerID)
+		dbError(w, "deploy record running", err)
+		return
+	}
 	s.audit(r, start, "deploy", "apps", id, c, true, "real container deployed")
 	writeJSON(w, 200, map[string]any{"id": id, "status": "running", "url": url, "port": port, "container_id": containerID})
 }
@@ -599,10 +621,13 @@ func (s *Server) handleAppStop(w http.ResponseWriter, r *http.Request, id string
 			_ = dep.Stop(a.ContainerID)
 		}
 	}
-	_ = s.tenant(r.Context(), c, u, role, func(tx pgx.Tx) error {
+	if err := s.tenant(r.Context(), c, u, role, func(tx pgx.Tx) error {
 		_, err := tx.Exec(r.Context(), `UPDATE apps SET status='stopped' WHERE id=$1`, id)
 		return err
-	})
+	}); err != nil {
+		dbError(w, "stop app", err)
+		return
+	}
 	s.audit(r, start, "stop", "apps", id, c, true, "")
 	writeJSON(w, 200, map[string]string{"id": id, "status": "stopped"})
 }
@@ -731,7 +756,7 @@ func (s *Server) handleClients(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var out []map[string]string
-	_ = s.tenant(r.Context(), c, u, role, func(tx pgx.Tx) error {
+	err := s.tenant(r.Context(), c, u, role, func(tx pgx.Tx) error {
 		rows, err := tx.Query(r.Context(), `SELECT id,name,email,notes FROM clients ORDER BY created_at DESC`)
 		if err != nil {
 			return err
@@ -740,11 +765,17 @@ func (s *Server) handleClients(w http.ResponseWriter, r *http.Request) {
 		out = []map[string]string{}
 		for rows.Next() {
 			var id, name, email, notes string
-			_ = rows.Scan(&id, &name, &email, &notes)
+			if err := rows.Scan(&id, &name, &email, &notes); err != nil {
+				return err
+			}
 			out = append(out, map[string]string{"id": id, "name": name, "email": email, "notes": notes})
 		}
-		return nil
+		return rows.Err()
 	})
+	if err != nil {
+		dbError(w, "list clients", err)
+		return
+	}
 	s.audit(r, start, "read", "clients", "", c, true, "")
 	writeJSON(w, 200, map[string]any{"clients": out})
 }
@@ -773,10 +804,13 @@ func (s *Server) handleClientOne(w http.ResponseWriter, r *http.Request) {
 			s.deny(w, r, start, "delete", "clients", id, c, "only owner may delete clients")
 			return
 		}
-		_ = s.tenant(r.Context(), c, u, role, func(tx pgx.Tx) error {
+		if err := s.tenant(r.Context(), c, u, role, func(tx pgx.Tx) error {
 			_, err := tx.Exec(r.Context(), `DELETE FROM clients WHERE id=$1`, id)
 			return err
-		})
+		}); err != nil {
+			dbError(w, "delete client", err)
+			return
+		}
 		s.audit(r, start, "delete", "clients", id, c, true, "")
 		writeJSON(w, 200, map[string]string{"deleted": id})
 		return
@@ -792,10 +826,13 @@ func (s *Server) handleClientOne(w http.ResponseWriter, r *http.Request) {
 			Notes string `json:"notes"`
 		}
 		_ = readJSON(r, &in)
-		_ = s.tenant(r.Context(), c, u, role, func(tx pgx.Tx) error {
+		if err := s.tenant(r.Context(), c, u, role, func(tx pgx.Tx) error {
 			_, err := tx.Exec(r.Context(), `UPDATE clients SET name=$2,email=$3,notes=$4 WHERE id=$1`, id, in.Name, in.Email, in.Notes)
 			return err
-		})
+		}); err != nil {
+			dbError(w, "update client", err)
+			return
+		}
 		s.audit(r, start, "update", "clients", id, c, true, "")
 		writeJSON(w, 200, map[string]string{"id": id})
 		return
@@ -808,8 +845,12 @@ func (s *Server) handleClientOne(w http.ResponseWriter, r *http.Request) {
 	err := s.tenant(r.Context(), c, u, role, func(tx pgx.Tx) error {
 		return tx.QueryRow(r.Context(), `SELECT name,email,notes FROM clients WHERE id=$1`, id).Scan(&name, &email, &notes)
 	})
-	if err != nil {
+	if errors.Is(err, pgx.ErrNoRows) {
 		writeJSON(w, 404, map[string]string{"error": "client not found"})
+		return
+	}
+	if err != nil {
+		dbError(w, "read client", err)
 		return
 	}
 	s.audit(r, start, "read", "clients", id, c, true, "")
@@ -831,7 +872,7 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	var out []map[string]any
-	_ = s.tenant(r.Context(), c, u, role, func(tx pgx.Tx) error {
+	err := s.tenant(r.Context(), c, u, role, func(tx pgx.Tx) error {
 		rows, err := tx.Query(r.Context(), `SELECT action,table_name,target_id,allowed,reason,latency_ms,created_at,actor_role FROM audit_logs ORDER BY created_at DESC LIMIT $1`, limit)
 		if err != nil {
 			return err
@@ -843,11 +884,17 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 			var allowed bool
 			var latency int64
 			var ts time.Time
-			_ = rows.Scan(&action, &table, &target, &allowed, &reason, &latency, &ts, &actorRole)
+			if err := rows.Scan(&action, &table, &target, &allowed, &reason, &latency, &ts, &actorRole); err != nil {
+				return err
+			}
 			out = append(out, map[string]any{"action": action, "table": table, "target_id": target, "allowed": allowed, "reason": reason, "latency_ms": latency, "created_at": ts, "actor_role": actorRole})
 		}
-		return nil
+		return rows.Err()
 	})
+	if err != nil {
+		dbError(w, "list audit", err)
+		return
+	}
 	writeJSON(w, 200, map[string]any{"audit": out})
 }
 
@@ -859,13 +906,15 @@ func (s *Server) handleAuditSummary(w http.ResponseWriter, r *http.Request) {
 	}
 	var total, allowed, denied int64
 	var avg float64
-	_ = s.tenant(r.Context(), c, u, role, func(tx pgx.Tx) error {
-		_ = tx.QueryRow(r.Context(), `SELECT count(*), coalesce(sum(CASE WHEN allowed THEN 1 ELSE 0 END),0), coalesce(sum(CASE WHEN NOT allowed THEN 1 ELSE 0 END),0), coalesce(avg(latency_ms),0) FROM audit_logs`).Scan(&total, &allowed, &denied, &avg)
-		return nil
-	})
+	if err := s.tenant(r.Context(), c, u, role, func(tx pgx.Tx) error {
+		return tx.QueryRow(r.Context(), `SELECT count(*), coalesce(sum(CASE WHEN allowed THEN 1 ELSE 0 END),0), coalesce(sum(CASE WHEN NOT allowed THEN 1 ELSE 0 END),0), coalesce(avg(latency_ms),0) FROM audit_logs`).Scan(&total, &allowed, &denied, &avg)
+	}); err != nil {
+		dbError(w, "audit summary totals", err)
+		return
+	}
 	// Per-day counts, last 7 days, from real audit rows only.
 	days := []map[string]any{}
-	_ = s.tenant(r.Context(), c, u, role, func(tx pgx.Tx) error {
+	if err := s.tenant(r.Context(), c, u, role, func(tx pgx.Tx) error {
 		rows, err := tx.Query(r.Context(), `SELECT created_at::date AS d, count(*) AS total, coalesce(sum(CASE WHEN allowed THEN 1 ELSE 0 END),0) AS a, coalesce(sum(CASE WHEN NOT allowed THEN 1 ELSE 0 END),0) AS den FROM audit_logs WHERE created_at >= now() - interval '7 days' GROUP BY d ORDER BY d`)
 		if err != nil {
 			return err
@@ -874,11 +923,16 @@ func (s *Server) handleAuditSummary(w http.ResponseWriter, r *http.Request) {
 		for rows.Next() {
 			var d time.Time
 			var t, a, den int64
-			_ = rows.Scan(&d, &t, &a, &den)
+			if err := rows.Scan(&d, &t, &a, &den); err != nil {
+				return err
+			}
 			days = append(days, map[string]any{"date": d.Format("2006-01-02"), "total": t, "allowed": a, "denied": den})
 		}
-		return nil
-	})
+		return rows.Err()
+	}); err != nil {
+		dbError(w, "audit summary per day", err)
+		return
+	}
 	writeJSON(w, 200, map[string]any{"total": total, "allowed": allowed, "denied": denied, "avg_latency_ms": avg, "per_day": days})
 }
 
@@ -895,7 +949,7 @@ func (s *Server) handleShares(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var out []map[string]any
-		_ = s.tenant(r.Context(), c, u, role, func(tx pgx.Tx) error {
+		if err := s.tenant(r.Context(), c, u, role, func(tx pgx.Tx) error {
 			rows, err := tx.Query(r.Context(), `SELECT id,table_name,row_id,expires_at,revoked,created_at FROM shares ORDER BY created_at DESC`)
 			if err != nil {
 				return err
@@ -907,11 +961,16 @@ func (s *Server) handleShares(w http.ResponseWriter, r *http.Request) {
 				var expires time.Time
 				var revoked bool
 				var created time.Time
-				_ = rows.Scan(&id, &table, &rowID, &expires, &revoked, &created)
+				if err := rows.Scan(&id, &table, &rowID, &expires, &revoked, &created); err != nil {
+					return err
+				}
 				out = append(out, map[string]any{"id": id, "table_name": table, "row_id": rowID, "expires_at": expires, "revoked": revoked, "created_at": created})
 			}
-			return nil
-		})
+			return rows.Err()
+		}); err != nil {
+			dbError(w, "list shares", err)
+			return
+		}
 		s.audit(r, start, "read", "shares", "", c, true, "")
 		writeJSON(w, 200, map[string]any{"shares": out})
 		return
@@ -993,10 +1052,13 @@ func (s *Server) handleShareRevoke(w http.ResponseWriter, r *http.Request) {
 		s.deny(w, r, start, "revoke", "shares", id, c, "only owner may revoke shares")
 		return
 	}
-	_ = s.tenant(r.Context(), c, u, role, func(tx pgx.Tx) error {
+	if err := s.tenant(r.Context(), c, u, role, func(tx pgx.Tx) error {
 		_, err := tx.Exec(r.Context(), `UPDATE shares SET revoked=true WHERE id=$1`, id)
 		return err
-	})
+	}); err != nil {
+		dbError(w, "revoke share", err)
+		return
+	}
 	s.audit(r, start, "revoke", "shares", id, c, true, "")
 	writeJSON(w, 200, map[string]string{"revoked": id})
 }
@@ -1088,7 +1150,7 @@ func (s *Server) handleHealProposals(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var out []map[string]any
-	_ = s.tenant(r.Context(), c, u, role, func(tx pgx.Tx) error {
+	if err := s.tenant(r.Context(), c, u, role, func(tx pgx.Tx) error {
 		rows, err := tx.Query(r.Context(), `SELECT id,title,diff,status,applied,fix_kind,fix_column FROM heal_proposals ORDER BY created_at DESC`)
 		if err != nil {
 			return err
@@ -1098,11 +1160,16 @@ func (s *Server) handleHealProposals(w http.ResponseWriter, r *http.Request) {
 		for rows.Next() {
 			var id, title, diff, status, fixKind, fixColumn string
 			var applied bool
-			_ = rows.Scan(&id, &title, &diff, &status, &applied, &fixKind, &fixColumn)
+			if err := rows.Scan(&id, &title, &diff, &status, &applied, &fixKind, &fixColumn); err != nil {
+				return err
+			}
 			out = append(out, map[string]any{"id": id, "title": title, "diff": diff, "status": status, "applied": applied, "fix_kind": fixKind, "fix_column": fixColumn})
 		}
-		return nil
-	})
+		return rows.Err()
+	}); err != nil {
+		dbError(w, "list heal proposals", err)
+		return
+	}
 	writeJSON(w, 200, map[string]any{"proposals": out})
 }
 
@@ -1135,13 +1202,17 @@ func (s *Server) handleHealApprove(w http.ResponseWriter, r *http.Request) {
 		}
 		return nil
 	})
-	if err != nil {
+	if errors.Is(err, errHealNotFound) {
 		// Audit the failed approval attempt, then 404 (not 200 approved).
 		s.audit(r, start, "approve", "heal_proposals", id, c, false, "proposal not found or already decided")
 		writeJSON(w, 404, map[string]string{"error": "proposal not found or already decided"})
 		return
 	}
-	writeJSON(w, 200, map[string]string{"id": id, "status": "approved", "applied": "false", "note": "approved, NOT applied in beta — apply the diff manually"})
+	if err != nil {
+		dbError(w, "approve heal proposal", err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"id": id, "status": "approved", "applied": false, "note": "approved, NOT applied in beta — apply the diff manually"})
 }
 
 func (s *Server) handleHealOne(w http.ResponseWriter, r *http.Request) {
