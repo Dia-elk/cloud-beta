@@ -1,6 +1,29 @@
 import "./globals.css";
+import type { Metadata } from "next";
 import type { ReactNode } from "react";
-export const metadata = { title: "Sample App — Client Tracker" };
-export default function Root({ children }: { children: ReactNode }) {
-  return (<html lang="en"><body>{children}</body></html>);
+import { Geist, Geist_Mono, Instrument_Serif } from "next/font/google";
+import { ToastProvider } from "@/components/toast";
+
+const sans = Geist({ subsets: ["latin"], variable: "--font-sans" });
+const mono = Geist_Mono({ subsets: ["latin"], variable: "--font-mono" });
+const display = Instrument_Serif({ subsets: ["latin"], weight: "400", variable: "--font-display" });
+
+export const metadata: Metadata = {
+  title: "Client Tracker",
+  description: "Keep track of your clients. Data access is governed by Cloud.",
+};
+
+const themeScript = `(function(){try{var t=localStorage.getItem("theme");var d=t?t==="dark":matchMedia("(prefers-color-scheme: dark)").matches;document.documentElement.classList.toggle("dark",d)}catch(e){}})()`;
+
+export default function RootLayout({ children }: { children: ReactNode }) {
+  return (
+    <html lang="en" className={`${sans.variable} ${mono.variable} ${display.variable}`} suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
+      </head>
+      <body className="min-h-dvh font-sans text-sm">
+        <ToastProvider>{children}</ToastProvider>
+      </body>
+    </html>
+  );
 }

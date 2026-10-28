@@ -1,72 +1,74 @@
+/*
+ * Design tokens — Cloud console.
+ * Product: a permission gateway for small software teams (developer tool,
+ * security). Direction: a quiet, neutral, Linear/Vercel-like console where
+ * the data carries the color. Ink-on-paper neutrals, ink primary buttons,
+ * one serif display face (Instrument Serif) over Geist Sans/Mono.
+ * Chart colors are validated (dataviz validator, both modes):
+ * allowed = blue, denied = critical red; never red vs green.
+ * Every color is an RGB triplet so Tailwind can apply alpha.
+ */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  color-scheme: light;
+@layer base {
+  :root {
+    --bg: 247 247 245;
+    --surface: 252 252 251;
+    --surface-2: 242 242 239;
+    --border: 229 229 225;
+    --fg: 24 24 23;
+    --fg-muted: 104 104 99;
+    --fg-subtle: 148 148 142;
+    --primary: 24 24 23;
+    --primary-fg: 252 252 251;
+    --success: 21 128 61;
+    --warning: 161 98 7;
+    --danger: 197 48 48;
+    --chart-allowed: 42 120 214;
+    --chart-denied: 208 59 59;
+    color-scheme: light;
+  }
+  .dark {
+    --bg: 15 15 14;
+    --surface: 26 26 25;
+    --surface-2: 35 35 33;
+    --border: 48 48 45;
+    --fg: 237 237 233;
+    --fg-muted: 163 163 157;
+    --fg-subtle: 115 115 110;
+    --primary: 237 237 233;
+    --primary-fg: 20 20 19;
+    --success: 74 222 128;
+    --warning: 250 204 21;
+    --danger: 248 113 113;
+    --chart-allowed: 57 135 229;
+    --chart-denied: 208 59 59;
+    color-scheme: dark;
+  }
+  * {
+    @apply border-border;
+  }
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    @apply bg-bg text-fg antialiased;
+    font-feature-settings: "ss01", "cv11";
+  }
+  h1,
+  h2,
+  h3 {
+    @apply tracking-tight;
+  }
+  ::selection {
+    background: rgb(var(--fg) / 0.12);
+  }
 }
 
-html {
-  -webkit-text-size-adjust: 100%;
-}
-
-body {
-  margin: 0;
-  color: #111827;
-  background-color: #f6f7f9;
-  background-image:
-    radial-gradient(560px 320px at 12% -4%, rgba(255, 45, 32, 0.14), transparent 65%),
-    radial-gradient(620px 380px at 88% 0%, rgba(99, 102, 241, 0.14), transparent 60%),
-    radial-gradient(520px 360px at 92% 88%, rgba(20, 184, 166, 0.12), transparent 60%),
-    radial-gradient(480px 320px at 4% 92%, rgba(245, 158, 11, 0.10), transparent 60%),
-    linear-gradient(180deg, #fbfbfc 0%, #f3f4f6 55%, #eef0f3 100%);
-  background-attachment: fixed;
-  font-family: ui-sans-system, -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
-  font-size: 14px;
-  line-height: 1.5;
-  -webkit-font-smoothing: antialiased;
-  text-rendering: optimizeLegibility;
-}
-
-::selection {
-  background: rgba(255, 45, 32, 0.18);
-}
-
-/* Glass system: translucent panels, 1px borders, soft shadows, blur. */
-.glass {
-  background: rgba(255, 255, 255, 0.72);
-  -webkit-backdrop-filter: blur(18px) saturate(1.3);
-  backdrop-filter: blur(18px) saturate(1.3);
-  border: 1px solid rgba(255, 255, 255, 0.75);
-  box-shadow:
-    0 1px 2px rgba(15, 23, 42, 0.05),
-    0 12px 32px rgba(15, 23, 42, 0.08);
-}
-
-.glass-strong {
-  background: rgba(255, 255, 255, 0.85);
-  -webkit-backdrop-filter: blur(20px) saturate(1.4);
-  backdrop-filter: blur(20px) saturate(1.4);
-  border: 1px solid rgba(255, 255, 255, 0.8);
-  box-shadow:
-    0 1px 2px rgba(15, 23, 42, 0.06),
-    0 16px 40px rgba(15, 23, 42, 0.10);
-}
-
-.glass-input {
-  background: rgba(255, 255, 255, 0.85);
-  border: 1px solid rgba(17, 24, 39, 0.12);
-  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.04);
-}
-
-.glass-input:focus {
-  outline: 2px solid rgba(255, 45, 32, 0.45);
-  outline-offset: 1px;
-  border-color: rgba(255, 45, 32, 0.45);
-}
-
-button:focus-visible,
-a:focus-visible {
-  outline: 2px solid rgba(255, 45, 32, 0.55);
-  outline-offset: 2px;
+@layer components {
+  .focus-ring {
+    @apply outline-none focus-visible:ring-2 focus-visible:ring-fg/20 focus-visible:ring-offset-2 focus-visible:ring-offset-bg;
+  }
 }

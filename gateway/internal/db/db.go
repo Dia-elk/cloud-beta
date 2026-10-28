@@ -9,9 +9,11 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
-	"time"
 
+	"cloudbeta/gateway/internal/auth"
 	"cloudbeta/gateway/internal/policy"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -31,15 +33,8 @@ func Connect(ctx context.Context, ownerDSN, appDSN string, pol *policy.Policy) (
 	if err := owner.Ping(ctx); err != nil {
 		return nil, fmt.Errorf("owner db ping: %w", err)
 	}
-	mig, err := os.ReadFile("migrations/001_init.sql")
-	if err != nil {
-		mig, err = os.ReadFile("/gateway/migrations/001_init.sql")
-		if err != nil {
-			return nil, err
-		}
-	}
-	if _, err := owner.Exec(ctx, string(mig)); err != nil {
-		return nil, fmt.Errorf("migrate: %w", err)
+	if err := migrate(ctx, owner); err != nil {
+		return nil, err
 	}
 	// MVP v1 columns for existing databases (fresh schemas get them
 	// from 001_init.sql itself). ADD COLUMN IF NOT EXISTS keeps this
@@ -59,6 +54,11 @@ func Connect(ctx context.Context, ownerDSN, appDSN string, pol *policy.Policy) (
 	}
 	if _, err := owner.Exec(ctx, `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO cloud_app`); err == nil {
 		_, _ = owner.Exec(ctx, `GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO cloud_app`)
+		// Session tables are control-plane only: the tenant pool never
+		// needs refresh tokens or the access-token revocation list.
+		if _, err := owner.Exec(ctx, `REVOKE ALL ON refresh_tokens, revoked_access_tokens FROM cloud_app`); err != nil {
+			return nil, fmt.Errorf("revoke session tables from cloud_app: %w", err)
+		}
 	}
 	// Fix 1 (CRITICAL): fail hard, never fall back to the owner pool for
 	// tenant data. A silent fallback would make RLS stop applying while
@@ -138,7 +138,7 @@ func (d *DB) Audit(ctx context.Context, companyID, actorID, actorRole, appID, ac
 	_, _ = d.Owner.Exec(ctx,
 		`INSERT INTO audit_logs(id, company_id, actor_id, actor_role, app_id, action, table_name, target_id, target_company_id, allowed, reason, latency_ms)
 		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-		ID("aud"), companyID, actorID, actorRole, appID, action, table, targetID, targetCompany, allowed, reason, latencyMs)
+		NewID(), companyID, actorID, actorRole, appID, action, table, targetID, targetCompany, allowed, reason, latencyMs)
 	if !allowed && targetCompany != "" && targetCompany != companyID {
 		mirrorReason := "cross-tenant denied: attacker attempted access"
 		if reason != "" && reason != "cross-tenant denied" {
@@ -147,10 +147,34 @@ func (d *DB) Audit(ctx context.Context, companyID, actorID, actorRole, appID, ac
 		_, _ = d.Owner.Exec(ctx,
 			`INSERT INTO audit_logs(id, company_id, actor_id, actor_role, app_id, action, table_name, target_id, target_company_id, allowed, reason, latency_ms)
 			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-			ID("aud"), targetCompany, actorID, actorRole, appID, action, table, targetID, targetCompany, false, mirrorReason, latencyMs)
+			NewID(), targetCompany, actorID, actorRole, appID, action, table, targetID, targetCompany, false, mirrorReason, latencyMs)
 	}
 }
 
-func ID(prefix string) string {
-	return fmt.Sprintf("%s_%d", prefix, time.Now().UnixNano())
+// NewID returns a UUID v4 primary key. Columns stay TEXT so RLS can
+// compare them to the text session variables without casts.
+func NewID() string { return auth.NewUUID() }
+
+// migrate applies every migrations/*.sql file in name order. Each file
+// must be idempotent (IF NOT EXISTS), since it runs on every startup.
+func migrate(ctx context.Context, owner *pgxpool.Pool) error {
+	dir := "migrations"
+	if _, err := os.Stat(dir); err != nil {
+		dir = "/gateway/migrations"
+	}
+	files, err := filepath.Glob(filepath.Join(dir, "*.sql"))
+	if err != nil || len(files) == 0 {
+		return fmt.Errorf("migrate: no migrations found in %s", dir)
+	}
+	sort.Strings(files)
+	for _, f := range files {
+		sql, err := os.ReadFile(f)
+		if err != nil {
+			return fmt.Errorf("migrate: read %s: %w", f, err)
+		}
+		if _, err := owner.Exec(ctx, string(sql)); err != nil {
+			return fmt.Errorf("migrate %s: %w", filepath.Base(f), err)
+		}
+	}
+	return nil
 }

@@ -1,19 +1,25 @@
+# Local stack: Postgres, gateway, dashboard, sample app, MCP server.
+# Secrets have no defaults on purpose: copy .env.example to .env first.
 services:
   postgres:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-cloud_owner}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-owner}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:-cloudbeta}
-      APP_DB_PASSWORD: ${APP_DB_PASSWORD:-change-me-app}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?set APP_DB_PASSWORD in .env}
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./postgres/init-app-role.sh:/docker-entrypoint-initdb.d/01-app-role.sh:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cloud_owner}"]
+      # -d is required: without it pg_isready connects to a database named
+      # after the user, which does not exist and logs FATAL every interval.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cloud_owner} -d ${POSTGRES_DB:-cloudbeta}"]
       interval: 5s
       timeout: 5s
       retries: 20
+    restart: unless-stopped
+
   gateway:
     build: ./gateway
     depends_on:
@@ -21,12 +27,23 @@ services:
         condition: service_healthy
     environment:
       PORT: "8080"
-      DATABASE_URL: postgres://${POSTGRES_USER:-cloud_owner}:${POSTGRES_PASSWORD:-change-me-owner}@postgres:5432/${POSTGRES_DB:-cloudbeta}?sslmode=disable
-      APP_DATABASE_URL: postgres://cloud_app:${APP_DB_PASSWORD:-change-me-app}@postgres:5432/${POSTGRES_DB:-cloudbeta}?sslmode=disable
-      JWT_SECRET: ${JWT_SECRET:-beta-dev-secret-change-me}
+      DATABASE_URL: postgres://${POSTGRES_USER:-cloud_owner}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-cloudbeta}?sslmode=disable
+      APP_DATABASE_URL: postgres://cloud_app:${APP_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-cloudbeta}?sslmode=disable
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env (32+ characters)}
+      # Browser origins allowed to call the API with session cookies.
+      # Deployed apps on DEPLOY_PUBLIC_HOST:3100-3199 are allowed too.
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:3001}
+      # Plain http://localhost cannot carry Secure cookies in every browser.
+      # Set to true whenever the stack is served over HTTPS.
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
       DOCKER_HOST: unix:///var/run/docker.sock
       DEPLOY_IMAGE: cloudbeta-sample-app
       DEPLOY_PUBLIC_HOST: http://localhost
+      # The gateway runs in a container, so its own localhost cannot reach
+      # host-published app ports; health checks probe the host here instead.
+      DEPLOY_PROBE_HOST: http://host.docker.internal
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8080:8080"
     volumes:
@@ -38,30 +55,50 @@ services:
       # host Docker daemon. Production needs a separate orchestrator /
       # per-tenant runtime, not the socket.
       - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/gateway", "healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
   dashboard:
-    build: ./dashboard
+    build:
+      context: ./dashboard
+      args:
+        # Inlined into the browser bundle at build time.
+        NEXT_PUBLIC_GATEWAY_URL: ${NEXT_PUBLIC_GATEWAY_URL:-http://localhost:8080}
+        NEXT_PUBLIC_SAMPLE_APP_URL: ${NEXT_PUBLIC_SAMPLE_APP_URL:-http://localhost:3001}
     depends_on:
-      - gateway
-    environment:
-      NEXT_PUBLIC_GATEWAY_URL: ${NEXT_PUBLIC_GATEWAY_URL:-http://localhost:8080}
+      gateway:
+        condition: service_healthy
     ports:
       - "3000:3000"
+    restart: unless-stopped
+
   sample-app:
-    build: ./sample-app
-    # Named so the gateway can reference the built image by name when
-    # it deploys a per-app container (DEPLOY_IMAGE=cloudbeta-sample-app).
+    build:
+      context: ./sample-app
+      args:
+        NEXT_PUBLIC_GATEWAY_URL: ${NEXT_PUBLIC_GATEWAY_URL:-http://localhost:8080}
+        NEXT_PUBLIC_DASHBOARD_URL: ${NEXT_PUBLIC_DASHBOARD_URL:-http://localhost:3000}
+    # Named so the gateway can deploy per-app containers from this image
+    # (DEPLOY_IMAGE=cloudbeta-sample-app).
     image: cloudbeta-sample-app
     depends_on:
-      - gateway
-    environment:
-      NEXT_PUBLIC_GATEWAY_URL: ${NEXT_PUBLIC_GATEWAY_URL:-http://localhost:8080}
+      gateway:
+        condition: service_healthy
     ports:
       - "3001:3000"
+    restart: unless-stopped
+
   mcp:
+    # Not started by `docker compose up`; run on demand over stdio:
+    #   docker compose run --rm -i mcp
+    profiles: ["tools"]
     build:
       context: ./gateway
       dockerfile: Dockerfile
-    # MCP runs the /mcp binary, not the gateway. Override entrypoint.
     entrypoint: ["/mcp"]
     depends_on:
       - gateway
@@ -70,5 +107,6 @@ services:
       MCP_TOKEN: ${MCP_TOKEN:-}
       MCP_COMPANY_ID: ${MCP_COMPANY_ID:-}
     stdin_open: true
+
 volumes:
   pgdata:
