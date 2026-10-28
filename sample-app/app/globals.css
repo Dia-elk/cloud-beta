@@ -1,1 +1,74 @@
-body{background:#0a0a0b;color:#e7e7ea;font-family:system-ui,sans-serif;font-size:14px} input,button{padding:8px;border-radius:6px;border:1px solid #26262b;background:#131316;color:#e7e7ea} button{background:#ff2d20;color:#fff;font-weight:600}
+/*
+ * Design tokens — Cloud console.
+ * Product: a permission gateway for small software teams (developer tool,
+ * security). Direction: a quiet, neutral, Linear/Vercel-like console where
+ * the data carries the color. Ink-on-paper neutrals, ink primary buttons,
+ * one serif display face (Instrument Serif) over Geist Sans/Mono.
+ * Chart colors are validated (dataviz validator, both modes):
+ * allowed = blue, denied = critical red; never red vs green.
+ * Every color is an RGB triplet so Tailwind can apply alpha.
+ */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --bg: 247 247 245;
+    --surface: 252 252 251;
+    --surface-2: 242 242 239;
+    --border: 229 229 225;
+    --fg: 24 24 23;
+    --fg-muted: 104 104 99;
+    --fg-subtle: 148 148 142;
+    --primary: 24 24 23;
+    --primary-fg: 252 252 251;
+    --success: 21 128 61;
+    --warning: 161 98 7;
+    --danger: 197 48 48;
+    --chart-allowed: 42 120 214;
+    --chart-denied: 208 59 59;
+    color-scheme: light;
+  }
+  .dark {
+    --bg: 15 15 14;
+    --surface: 26 26 25;
+    --surface-2: 35 35 33;
+    --border: 48 48 45;
+    --fg: 237 237 233;
+    --fg-muted: 163 163 157;
+    --fg-subtle: 115 115 110;
+    --primary: 237 237 233;
+    --primary-fg: 20 20 19;
+    --success: 74 222 128;
+    --warning: 250 204 21;
+    --danger: 248 113 113;
+    --chart-allowed: 57 135 229;
+    --chart-denied: 208 59 59;
+    color-scheme: dark;
+  }
+  * {
+    @apply border-border;
+  }
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    @apply bg-bg text-fg antialiased;
+    font-feature-settings: "ss01", "cv11";
+  }
+  h1,
+  h2,
+  h3 {
+    @apply tracking-tight;
+  }
+  ::selection {
+    background: rgb(var(--fg) / 0.12);
+  }
+}
+
+@layer components {
+  .focus-ring {
+    @apply outline-none focus-visible:ring-2 focus-visible:ring-fg/20 focus-visible:ring-offset-2 focus-visible:ring-offset-bg;
+  }
+}
