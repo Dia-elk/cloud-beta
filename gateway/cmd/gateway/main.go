@@ -440,17 +440,28 @@ func publicAppURL(port int) string {
 }
 
 // appHealthy checks the public URL first, then the same port on
-// localhost (the daemon host). The second check exists because a
+// localhost, then on DEPLOY_PROBE_HOST. The probe host exists because a
 // gateway running inside a container cannot reach a host-published
-// port via its own localhost; either 2xx counts, and no check means
-// not healthy. The reported URL is always the public one.
+// port via its own localhost (compose sets http://host.docker.internal);
+// any 2xx counts, and no check means not healthy. The reported URL is
+// always the public one.
 func appHealthy(url string, port int) bool {
 	if url != "" && deploy.CheckURL(url) {
 		return true
 	}
-	if port > 0 {
-		local := "http://localhost:" + strconv.Itoa(port)
-		if local != url && deploy.CheckURL(local) {
+	if port <= 0 {
+		return false
+	}
+	local := "http://localhost:" + strconv.Itoa(port)
+	if local != url && deploy.CheckURL(local) {
+		return true
+	}
+	if probe := os.Getenv("DEPLOY_PROBE_HOST"); probe != "" {
+		if !strings.HasPrefix(probe, "http://") && !strings.HasPrefix(probe, "https://") {
+			probe = "http://" + probe
+		}
+		probeURL := strings.TrimSuffix(probe, "/") + ":" + strconv.Itoa(port)
+		if probeURL != url && probeURL != local && deploy.CheckURL(probeURL) {
 			return true
 		}
 	}
