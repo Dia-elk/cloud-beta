@@ -49,7 +49,7 @@ echo "Client still exists for owner (expect 200):"
 curl -fsS "$GW/api/v1/clients/$CLID" -H "Authorization: Bearer $ATOK"; echo
 echo "== 4. Share with 2s expiry =="
 SH=$(curl -fsS -X POST "$GW/api/v1/shares" -H "Authorization: Bearer $ATOK" -H 'Content-Type: application/json' -d "{\"row_id\":\"$CLID\",\"expires_in\":\"2s\"}")
-STOK=$(echo "$SH" | jq -r .token); echo "Share token: ${STOK:0:12}..."
+STOK=$(echo "$SH" | jq -r .token); echo "Share token: $(printf '%s' "$STOK" | cut -c1-12)..."
 echo "Share before expiry (expect 200, single row):"
 curl -fsS "$GW/share/$STOK"; echo
 echo "Waiting 3s for expiry..."
