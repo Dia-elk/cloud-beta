@@ -27,6 +27,11 @@ services:
       DOCKER_HOST: unix:///var/run/docker.sock
       DEPLOY_IMAGE: cloudbeta-sample-app
       DEPLOY_PUBLIC_HOST: http://localhost
+      # The gateway runs in a container, so its own localhost cannot reach
+      # host-published app ports; health checks probe the host here instead.
+      DEPLOY_PROBE_HOST: http://host.docker.internal
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8080:8080"
     volumes:
